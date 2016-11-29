@@ -62,18 +62,21 @@ void print_args(struct pt_regs *regs) {
 
 int pre_do_filp_open(struct kprobe *p, struct pt_regs *regs)
 {
-    printk("current task onCPU#%d: %s (before scheduling), preempt_count = %d\n", smp_processor_id(),current->comm, preempt_count());
-    printk("before %s: arg:%016lx, filename:%s\n", __func__, regs->si, ((struct filename*)regs->si)->name);
-    unsigned long args;
-    syscall_get_arguments(current, regs, 2, 1, &args);
-    printk("after %s: arg:%016lx, filename:%s\n", __func__, args, (char*)args);
-    schedule_counter++;
+    char public_dir[] = "/home/zhongjian/workplace/log";
+    //printk("current task onCPU#%d: %s (before scheduling), preempt_count = %d\n", smp_processor_id(),current->comm, preempt_count());
+    //printk("before %s: arg:%016lx, filename:%s\n", __func__, regs->si, ((struct filename*)regs->si)->name);
+    char* caller_dir = ((struct filename*)regs->si)->name;
+    printk("%s:caller file name:%s\n", __func__, caller_dir);
+    if (!strncmp(public_dir, caller_dir, sizeof(public_dir) - 1)) {
+        printk("in public dir\n");
+        dump_stack();
+    }
     return 0;
 }
 
 void post_do_filp_open(struct kprobe *p, struct pt_regs *regs, unsigned long flags)
 {
-    printk("current task onCPU#%d: %s (after scheduling), preempt_count = %d\n", smp_processor_id(),current->comm, preempt_count());
+    //printk("current task onCPU#%d: %s (after scheduling), preempt_count = %d\n", smp_processor_id(),current->comm, preempt_count());
 }
 
 int fault_do_filp_open(struct kprobe *p, struct pt_regs *regs, int trapnr)
@@ -129,8 +132,8 @@ int fault_openat(struct kprobe *p, struct pt_regs *regs, int trapnr)
 }
 
 static struct mz_kprobe mz_kprobes[] = {
-    {"open", (struct kprobe*)(&kp_open)},
-    {"openat", (struct kprobe*)(&kp_openat)},
+//    {"open", (struct kprobe*)(&kp_open)},
+//    {"openat", (struct kprobe*)(&kp_openat)},
     {"do_filp_open", (struct kprobe*)(&kp_do_filp_open)},
 };
 
