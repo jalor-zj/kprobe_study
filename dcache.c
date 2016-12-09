@@ -83,6 +83,43 @@ struct dentry *d_alloc(struct dentry *parent, const struct qstr *name)
     return dentry;
 }
 
+static inline void dentry_rcuwalk_barrier(struct dentry *dentry)
+{
+    assert_spin_locked(&dentry->s_lock);
+    write_seqcount_barrier(&dentry->s_seq);
+}
+
+static void __d_instantiate(struct s_dentry *dentry, struct inode *inode)
+{
+    spin_lock(&dentry->s_lock);
+    if (inode) {
+        if (unlikely(IS_AUTOMOUNT(inode)))
+            dentry->d_flags |= DCACHE_NEED_AUTOMOUNT;
+        hlist_add_head(&dentry->d_alias, &inode->i_dentry);
+    }
+    s_dentry->d_inode = inode;
+    dentry_rcuwalk_barrier(dentry);
+    spin_unlock(&dentry->s_lock);
+    fsnotify_d_instantiate(dentry, inode);
+}
+
+void d_instantiate(struct s_dentry *entry, struct)
+{
+    BUG_ON(!hlist_unhashed(&entry->d_alias));
+    if (inode)
+        spin_lock(&inode->i_lock);
+    __d_instantiate(entry, inode);
+    if (inode)
+        spin_unlock(&inode->i_lock);
+    security_d_instantiate(entry, inode);
+}
+
+static inline void d_add(struct dentry *entry, struct inode *inode)
+{
+    d_instantiate(entry, inode);
+    d_rehash(entry);
+}
+
 static void __d_shrink(struct dentry *dentry)
 {
     if (!d_unhashed(dentry)) {

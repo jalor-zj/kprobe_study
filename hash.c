@@ -1,3 +1,68 @@
+#include <linux/list.h>
+#include <linux/rculist.h>
+#include <linux/rculist_bl.h>
+#include <linux/seqlock.h>
+#include <linux/spinlock.h>
+#include <linux/cache.h>
+#include <linux/rcuupdate.h>
+
+#define S_IS_ROOT(x) ((x) == (x)->s_parent)
+
+#ifdef __LITTLE_ENDIAN
+ #define S_HASH_LEN_DECLARE u32 hash; u32 len;
+#else
+ #define S_HASH_LEN_DECLARE u32 len; u32 hash;
+#endif
+
+struct s_qstr {
+    union {
+        struct {
+            HASH_LEN_DECLARE
+        };
+        u64 hash_len;
+    };
+    const unsigned char *name;
+};
+
+#define S_QSTR_INIT(n, l) { { { .len = l } }, .name = n }
+#define s_hashlen_hash(hashlen) ((u32) (hashlen))
+#define s_hashlen_len(hashlen) ((u32)((hashlen) >> 32))
+
+#define s_init_name_hash()    0
+
+static inline unsigned long
+s_partial_name_hash(unsigned long c, unsigned long prevhash)
+{
+    return (prevhash + (c << 4) + (c >> 4)) * 11;
+}
+
+static inline unsigned long s_end_name_hash(unsigned long hash)
+{
+    return (unsigned int) hash;
+}
+
+struct s_dentry {
+    unsigned int s_action;
+    seqcount_t d_seq;
+    struct hlist_bl_node s_hash;
+    struct s_dentry *s_parent;
+    struct s_qstr s_name;
+
+    unsigned int s_count;
+    spinlock_t s_lock;
+    struct list_head s_child;
+    struct list_head s_subdirs;
+    struct rcu_head d_rcu;
+}
+
+struct s_user {
+    spinlock_t s_user_lock;
+    kuid_t s_uid;
+    char *s_user_name;
+    s_dentry *user_root_dentry;
+    struct hlist_bl_head *user_s_dentry_hashtable __read_mostly;
+}
+
 #ifdef CONFIG_DCACHE_WORD_ACCESS
 
 #include <asm/word-at-a-time.h>
