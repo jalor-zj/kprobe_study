@@ -50,9 +50,12 @@ struct s_dentry {
 
     unsigned int s_count;
     spinlock_t s_lock;
-    struct list_head s_child;
+    struct list_head s_lru;
+    union {
+        struct list_head s_child;
+        struct rcu_head d_rcu;
+    } s_u;
     struct list_head s_subdirs;
-    struct rcu_head d_rcu;
 }
 
 struct s_user {
