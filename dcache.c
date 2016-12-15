@@ -344,35 +344,20 @@ static int link_path_walk(const char *name, struct nameidata *nd)
     return err;
 }
 
+static inline void lock_rcu_walk(void)
+{
+    rcu_read_lock();
+}
+
+static inline void unlock_rcu_walk(void)
+{
+    rcu_read_unlock();
+}
+
 static int path_init(int dfd, const char *name, unsigned int flags,
             struct nameidata *nd, struct file **fp)
 {
     int retval = 0;
-    nd->last_type = LAST_ROOT;
-    nd->flags = flags | LOOKUP_JUMPED;
-    nd->depth = 0;
-
-    if (flags & LOOKUP_ROOT) {
-        struct inode *inode = nd->root.dentry->d_inode;
-        if (*name) {
-            if (!can_lookup(inode))
-                return -ENOTDIR;
-            retval = inode_permission(inode, MAY_EXEC);
-            if (retval)
-                return retval;
-        }
-        nd->path = nd->root;
-        nd->inode = inode;
-        if (flags & LOOKUP_RCU) {
-            look_rcu_walk();
-            nd->seq = __read_seqcount_begin(&nd->path.dentry->d_seq);
-        } else {
-            path_get(&nd->path);
-        }
-        return 0;
-    }
-
-    nd->root.mnt = NULL;
 
     if (*name == '/') {
         if (flags & LOOKUP_RCU) {
