@@ -107,7 +107,7 @@ static struct s_dentry *lookup_dcache(struct s_qstr *name, struct s_dentry *dir,
     return dentry;
 }
 
-static inline void dentry_rcuwalk_barrier(struct dentry *dentry)
+static inline void dentry_rcuwalk_barrier(struct s_dentry *dentry)
 {
     assert_spin_locked(&dentry->s_lock);
     write_seqcount_barrier(&dentry->s_seq);
@@ -144,23 +144,20 @@ static inline void d_add(struct dentry *entry, struct inode *inode)
     d_rehash(entry);
 }
 
-static void __d_shrink(struct dentry *dentry)
+static void __d_shrink(struct s_dentry *dentry)
 {
     if (!d_unhashed(dentry)) {
         struct hlist_bl_head *b;
-        if (unlikely(dentry->d_flags & DCACHE_DISCONNECTED))
-            b = &dentry->d_sb->s_anon;
-        else
-            b = d_hash(dentry->d_parent, dentry->d_name.hash);
+        b = d_hash(dentry->s_parent, dentry->s_name.hash);
 
         hlist_bl_lock(b);
-        __hlist_bl_del(&dentry->d_hash);
+        __hlist_bl_del(&dentry->s_hash);
         dentry->d_hash.pprev = NULL;
         hlist_bl_unlock(b);
     }
 }
 
-void __d_drop(struct dentry *dentry)
+void __s_drop(struct s_dentry *dentry)
 {
     if (!d_unhashed(dentry)) {
         __d_shrink(dentry);
@@ -171,7 +168,7 @@ void __d_drop(struct dentry *dentry)
 void d_drop(struct dentry *dentry)
 {
     spin_lock(&dentry->d_lock);
-    __d_drop(dentry);
+    __s_drop(dentry);
     spin_unlock(&dentry->lock);
 }
 
@@ -354,6 +351,72 @@ static inline void unlock_rcu_walk(void)
     rcu_read_unlock();
 }
 
+static inline struct s_dentry *sget_slock(struct s_dentry *dentry)
+{
+    if (dentry)
+        dentry->s_count++;
+    return dentry
+}
+
+static inline struct s_dentry *sget(struct s_dentry *dentry)
+{
+    if (dentry) {
+        spin_lock(&dentry->s_lock);
+        dget_slock(dentry);
+        spin_unlock(&dentry->s_lock);
+    }
+    return dentry;
+}
+
+static inline struct s_dentry *dentry_kill(struct s_dentry *dentry, int ref)
+{
+    struct s_dentry *parent;
+
+    if (IS_ROOT(dentry))
+        parent = NULL;
+    else
+        parent = dentry->s_parent;
+
+    if (ref)
+        dentry->s_count--;
+
+    dentry_lru_del(dentry);
+    __s_drop(dentry);
+    return d_kill(dentry, parent);
+}
+
+void sput(struct s_dentry *dentry)
+{
+    if (!dentry)
+        return;
+
+repeat:
+    if (dentry->s_count == 1)
+        might_sleep();
+    spin_lock(&dentry->s_lock);
+    BUG_ON(!dentry->s_count);
+    if (dentry->s_count > 1) {
+        dentry->s_count--;
+        spin_unlock(&dentry->s_lock);
+        return;
+    }
+
+    if (d_unhashed(dentry))
+        goto kill_it;
+
+    dentry->s_flags |= SCACHE_REFERENCED;
+    dentry_lru_add(dentry);
+
+    dentry->s_count--;
+    spin_unlock(&dentry->s_lock);
+    return;
+
+kill_it:
+    dentry = dentry_kill(dentry, 1);
+    if (dentry)
+        goto repeat;
+}
+
 static int path_init(int dfd, const char *name, unsigned int flags,
             struct nameidata *nd, struct file **fp)
 {
@@ -362,10 +425,8 @@ static int path_init(int dfd, const char *name, unsigned int flags,
     if (*name == '/') {
         if (flags & LOOKUP_RCU) {
             lock_rcu_walk();
-            set_root_rcu(nd);
         } else {
-            set_root(nd);
-            path_get(&nd->root);
+            sget(&nd->root);
         }
         nd->path = nd->root;
     } else if (dfd == AT_FDCWD) {
@@ -701,12 +762,6 @@ static void d_free(struct dentry *dentry)
         __d_free(&dentry->d_u.d_rcu);
     else
         call_rcu(&dentry->d_u.d_rcu, __d_free)
-}
-
-static inline void dentry_rcuwalk_barrier(struct dentry *dentry)
-{
-    assert_spin_locked(&dentry->d_lock);
-    write_seqcount_barrier(&dentry->d_seq);
 }
 
 static void __init dcache_init_early(void)
