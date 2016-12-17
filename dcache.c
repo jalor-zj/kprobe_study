@@ -368,6 +368,18 @@ static inline struct s_dentry *sget(struct s_dentry *dentry)
     return dentry;
 }
 
+static struct s_dentry *d_kill(struct s_dentry *dentry, struct s_dentry *parent)
+{
+    list_del(&dentry->s_u.s_child);
+
+    dentry->s_flags |= DCACHE_DENTRY_KILLED;
+    if (parent)
+        spin_unlock(&parent->s_lock);
+
+    d_free(dentry);
+    return parent;
+}
+
 static inline struct s_dentry *dentry_kill(struct s_dentry *dentry, int ref)
 {
     struct s_dentry *parent;
@@ -743,25 +755,21 @@ void d_rehash(struct dentry *entry)
 
 static void __d_free(struct rcu_head *head)
 {
-    struct dentry *dentry = container_of(head, struct dentry, d_u.d_rcu);
+    struct s_dentry *dentry = container_of(head, struct s_dentry, s_u.s_rcu);
 
-    WARN_ON(!hlist_unhashed(&dentry->d_alias));
     if (dname_external(dentry))
-        kfree(dentry->d_name.name);
+        kfree(dentry->s_name.name);
     kmem_cache_free(dentry_cache, dentry);
 }
 
-static void d_free(struct dentry *dentry)
+static void d_free(struct s_dentry *dentry)
 {
-    BUG_ON(dentry->d_count);
-    this_cpu_dec(nr_dentry);
-    if (dentry->d_op && dentry->d_op->d_release)
-        dentry->d_op->d_release(dentry);
+    BUG_ON(dentry->s_count);
 
-    if (!(dentry->dflags & DCACHE_RCUACCESS))
-        __d_free(&dentry->d_u.d_rcu);
+    if (!(dentry->s_flags & DCACHE_RCUACCESS))
+        __d_free(&dentry->s_u.s_rcu);
     else
-        call_rcu(&dentry->d_u.d_rcu, __d_free)
+        call_rcu(&dentry->s_u.s_rcu, __d_free)
 }
 
 static void __init dcache_init_early(void)
