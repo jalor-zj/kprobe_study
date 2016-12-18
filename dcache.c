@@ -226,14 +226,66 @@ struct s_dentry *lookup_one_len(const char *name, struct s_dentry *base, int len
     return __lookup_hash(&this, base, 0)
 }
 
-static inline int walk_component(struct nameidata *nd, struct path *path,
+static void follow_dotdot(struct nameidata *nd)
+{
+	if (!nd->root.mnt)
+		set_root(nd);
+
+	while(1) {
+		struct dentry *old = nd->path.dentry;
+
+		if (nd->path.dentry == nd->root.dentry && nd->path.mnt == nd->root.mnt) {
+			break;
+		}
+
+		if (nd->path.dentry != nd->path.mnt->mnt_root) {
+			nd->path.dentry = dget_parent(nd->path.dentry);
+			dput(old);
+			break;
+		}
+		if (!follow_up(&nd->path))
+			break;
+	}
+	follow_mount(&nd->path);
+	nd->inode = nd->path.dentry->d_inode;
+}
+
+static inline int handle_dots(struct nameidata *nd, int type)
+{
+	if (type == LAST_DOTDOT) {
+		if (nd->flags & LOOKUP_RCU) {
+			if (follow_dotdot_rcu(nd))
+				return -ECHILD;
+		} else
+				follow_dotdot(nd);
+	}
+	return 0;
+}
+
+static void terminate_walk(struct nameidata *nd)
+{
+	if (!(nd->flags & LOOKUP_RCU)) {
+		path_put(&nd->path);
+	} else {
+		nd->flags &= ~LOOKUP_RCU;
+		if (!(nd->flags & LOOKUP_ROOT))
+			nd->root.mnt = NULL;
+		rcu_read_unlock();
+	}
+}
+
+static inline int should_follow_link(struct dentry *dentry, int follow)
+{
+	return unlikely(d_is_symlink(dentry)) ? follow : 0;
+}
+
+static inline int walk_component(struct nameidata *nd, int type, struct path *path,
             int follow)
 {
-    struct inode *inode;
     int err;
 
-    if (unlikely(nd->last_type != LAST_NORM))
-        return handle_dots(nd, nd->last_type);
+    if (unlikely(type != LAST_NORM))
+        return handle_dots(nd, type);
     err = lookup_fast(nd, path, &inode);
     if (unlikely(err)) {
         if (err < 0)
@@ -270,7 +322,7 @@ out_err:
     return err;
 }
 
-static int link_path_walk(const char *name, struct nameidata *nd)
+static int link_path_walk(const char *name, struct s_dentry *parent)
 {
     struct path next;
     int err;
@@ -285,10 +337,6 @@ static int link_path_walk(const char *name, struct nameidata *nd)
         long len;
         int type;
 
-        err = may_lookup(nd);
-        if (err)
-            break;
-
         len = hash_name(name, &this.hash);
         this.name = name;
         this.len = len;
@@ -298,19 +346,11 @@ static int link_path_walk(const char *name, struct nameidata *nd)
             case 2:
                 if (name[1] == '.') {
                     type = LAST_DOTDOT;
-                    nd->flags |= LOOKUP_JUMPED;
                 }
                 break;
             case 1:
                 type = LAST_DOT;
         }
-        if (likely(type == LAST_NORM)) {
-            struct dentry *parent = nd->path.dentry;
-            nd->flags &= ~LOOKUP_JUMPED;
-        }
-
-        nd->last = this;
-        nd->last_type = type;
 
         if (!name[len])
             return 0;
@@ -323,7 +363,7 @@ static int link_path_walk(const char *name, struct nameidata *nd)
 
         name += len;
 
-        err = walk_component(nd, &next, LOOKUP_FOLLOW);
+        err = walk_component(&this, tpye, &next, LOOKUP_FOLLOW);
         if (err < 0)
             return err;
 
@@ -429,8 +469,8 @@ kill_it:
         goto repeat;
 }
 
-static int path_init(int dfd, const char *name, unsigned int flags,
-            struct nameidata *nd, struct file **fp)
+static int path_init(const char *name, unsigned int flags,
+            struct s_dentry *out, struct s_dentry *root)
 {
     int retval = 0;
 
@@ -438,10 +478,10 @@ static int path_init(int dfd, const char *name, unsigned int flags,
         if (flags & LOOKUP_RCU) {
             lock_rcu_walk();
         } else {
-            sget(&nd->root);
+            sget(root);
         }
-        nd->path = nd->root;
-    } else if (dfd == AT_FDCWD) {
+        out = root;
+    } else {
         if (flags & LOOKUP_RCU) {
             struct fs_struct *fs = current->fs;
             unsigned seq;
@@ -450,41 +490,16 @@ static int path_init(int dfd, const char *name, unsigned int flags,
 
             do {
                 seq = read_seqcount_begin(&fs->seq);
-                nd->path = fs->pwd;
+                out = fs->pwd.dentry;
                 nd->seq = __read_seqcount_begin(&nd->path.dentry->d_seq);
             } while (read_seqcount_retry(&fs->seq, seq));
         } else {
-            get_fs_pwd(current->fs, &nd->path);
-        }
-    } else {
-        struct fd f = fdget_raw(dfd);
-        struct dentry *dentry;
-
-        if (!f.file)
-            return -EBADF;
-
-        dentry = f.file->f_path.dentry;
-
-        if (*name) {
-            if (!can_lookup(dentry->d_inode)) {
-                fdput(f);
-                return -ENOTDIR
-            }
-        }
-
-        nd->path = f.file->f_path;
-        if (flags & LOOKUP_RCU) {
-            if (f.need_put)
-                *fp = f.file;
-            nd->seq = __read_seqcount_begin(&nd->path.dentry->d_seq);
-            lock_rcu_walk();
-        } else {
-            path_get(&nd->path);
-            fdput(f);
+			struct path;
+            get_fs_pwd(current->fs, &path);
+			out = path.dentry;
         }
     }
 
-    nd->inode = nd->path.dentry->d_inode;
     return 0;
 }
 
